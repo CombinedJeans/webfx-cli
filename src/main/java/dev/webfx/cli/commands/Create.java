@@ -154,8 +154,7 @@ public final class Create extends CommonSubcommand {
             validateParameters();
             createTagApplicationModule(null);
             createTagApplicationModule(TargetTag.OPENJFX);
-            createTagApplicationModule(TargetTag.GWT);
-            createTagApplicationModule(TargetTag.GLUON);
+            createTagApplicationModule(TargetTag.NATIVE);
             createTagApplicationModule(TargetTag.TEAVM, TargetTag.JS);
             createTagApplicationModule(TargetTag.TEAVM, TargetTag.WASM);
             runUpdateIfNotSkipped();
@@ -256,14 +255,11 @@ public final class Create extends CommonSubcommand {
         @CommandLine.Option(names = {"-a", "--all"}, description = "All supported targets")
         private boolean all;
 
-        @CommandLine.Option(names = {"-g", "--gwt"}, description = "Includes the GWT target")
-        private boolean gwt;
-
         @CommandLine.Option(names = {"-o", "--openjfx"}, description = "Includes the OpenJFX target")
         private boolean openjfx;
 
-        @CommandLine.Option(names = {"-u", "--gluon"}, description = "Includes the Gluon target")
-        private boolean gluon;
+        @CommandLine.Option(names = {"-n", "--native"}, description = "Includes the GraalVM native target")
+        private boolean nativeTarget;
 
         //@CommandLine.Option(names = {"--j2cl"}, description = "Includes the J2CL compilation")
         private boolean j2cl;
@@ -293,12 +289,10 @@ public final class Create extends CommonSubcommand {
             for (DevProjectModule applicationModule : applicationModules) {
                 String applicationModuleName = applicationModule.getName();
                 Path parentDirectory = applicationModule.getParentModule().getHomeDirectory();
-                if (all || gwt)
-                    createTargetModule(applicationModuleName + "-gwt", parentDirectory);
                 if (all || openjfx)
                     createTargetModule(applicationModuleName + "-openjfx", parentDirectory);
-                if (all || gluon)
-                    createTargetModule(applicationModuleName + "-gluon", parentDirectory);
+                if (all || nativeTarget)
+                    createTargetModule(applicationModuleName + "-native", parentDirectory);
                 if (all || teavm || javascript)
                     createTargetModule(applicationModuleName + "-teavm-js", parentDirectory);
                 if (all || teavm || wasm)

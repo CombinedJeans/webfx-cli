@@ -33,7 +33,7 @@ public final class CssFilesGenerator {
     // New overload allowing removal of unsupported fxweb@ declarations during generation
     public static int generateExecutableModuleCssResourceFiles(DevProjectModule module, boolean canUseCache, StopWatch mergePrepStopWatch, boolean skipCssErrors, boolean removeCssErrors) {
         boolean isWebExecutable = module.getBuildInfo().isForWeb;
-        boolean isJavaFxExecutable = !isWebExecutable && module.isExecutable() && (module.getTarget().hasTag(TargetTag.OPENJFX) || module.getTarget().hasTag(TargetTag.GLUON));
+        boolean isJavaFxExecutable = !isWebExecutable && module.isExecutable() && (module.getTarget().hasTag(TargetTag.OPENJFX) || module.getTarget().hasTag(TargetTag.NATIVE));
         if (!isWebExecutable && !isJavaFxExecutable)
             return 0;
 
@@ -129,7 +129,7 @@ public final class CssFilesGenerator {
             }
         });
 
-        Path mergedCssTargetFolder = isWebExecutable ? module.getGwtExecutableFilePath().getParent().resolve("dev/webfx/kit/css") : null;
+        Path mergedCssTargetFolder = isWebExecutable ? module.getWebExecutableFilePath().getParent().resolve("dev/webfx/kit/css") : null;
 
         // Writing down all css files other than main.css (main.css will be merged directly in index.html)
         for (Map.Entry<Path, StringBuilder> entry : cssMerges.entrySet()) {

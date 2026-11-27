@@ -20,16 +20,15 @@ final class BuildRunCommon {
     final boolean clean;
     final boolean build;
     final boolean run;
-    final boolean gwt;
     final boolean j2cl;
     final boolean teavm;
     final boolean javascript;
     final boolean wasm;
     final boolean fatjar;
     final boolean openJfxDesktop;
-    final boolean gluonDesktop;
-    final boolean android;
-    final boolean ios;
+    final boolean nativeDesktop;
+    final boolean perPackage;
+    final boolean layerPerPackage;
     final boolean locate;
     final boolean show;
     final boolean appImage;
@@ -38,7 +37,7 @@ final class BuildRunCommon {
     final int port;
     final boolean file;
 
-    public BuildRunCommon(boolean clean, boolean build, boolean run, boolean gwt, boolean j2cl, boolean teavm, boolean javascript, boolean wasm, boolean fatjar, boolean openJfxDesktop, boolean gluonDesktop, boolean android, boolean ios, boolean locate, boolean show, boolean appImage, boolean deb, boolean rpm, int port, boolean file) {
+    public BuildRunCommon(boolean clean, boolean build, boolean run, boolean j2cl, boolean teavm, boolean javascript, boolean wasm, boolean fatjar, boolean openJfxDesktop, boolean nativeDesktop, boolean perPackage, boolean layerPerPackage, boolean locate, boolean show, boolean appImage, boolean deb, boolean rpm, int port, boolean file) {
         if (teavm) {
             if (!javascript && !wasm)
                 javascript = wasm = true;
@@ -48,16 +47,15 @@ final class BuildRunCommon {
         this.clean = clean;
         this.build = build;
         this.run = run;
-        this.gwt = gwt;
         this.j2cl = j2cl;
         this.teavm = teavm;
         this.javascript = javascript;
         this.wasm = wasm;
         this.fatjar = fatjar;
         this.openJfxDesktop = openJfxDesktop;
-        this.gluonDesktop = gluonDesktop;
-        this.android = android;
-        this.ios = ios;
+        this.nativeDesktop = nativeDesktop;
+        this.layerPerPackage = layerPerPackage;
+        this.perPackage = perPackage || layerPerPackage; // --layer-per-package implies --per-package
         this.locate = locate;
         this.show = show;
         this.appImage = appImage;
@@ -66,10 +64,6 @@ final class BuildRunCommon {
         this.port = port;
         this.file = file;
         // Checking this is a compatible machine for the target
-        if (android && !OperatingSystem.isLinux())
-            throw new CliException("Please use a Linux machine to build the Android app");
-        if (ios && !OperatingSystem.isMacOs())
-            throw new CliException("Please use a Mac to build the iOS app");
         if ((appImage || deb || rpm) && !OperatingSystem.isLinux())
             throw new CliException("--AppImage, --deb and --rpm options are to be used on Linux machines only");
         if ((appImage || deb || rpm) && !openJfxDesktop)
@@ -80,11 +74,11 @@ final class BuildRunCommon {
         return findExecutableModule(workspace, false);
     }
 
-    DevProjectModule findGluonModule(CommandWorkspace workspace) {
+    DevProjectModule findNativeModule(CommandWorkspace workspace) {
         return findExecutableModule(workspace, true);
     }
 
-    private DevProjectModule findExecutableModule(CommandWorkspace workspace, boolean returnGluonModuleOnly) {
+    private DevProjectModule findExecutableModule(CommandWorkspace workspace, boolean returnNativeModuleOnly) {
         DevProjectModule workingModule = workspace.getWorkingDevProjectModule();
         DevProjectModule topRootModule = workspace.getTopRootModule();
         ReusableStream<DevProjectModule> executableModules = findExecutableModules(workingModule);
@@ -102,8 +96,8 @@ final class BuildRunCommon {
                 executableModules.flatMap(this::getExecutableFilePath).forEach(BuildRunCommon::showFile);
             return null;
         }
-        if (returnGluonModuleOnly)
-            executableModules = executableModules.filter(m -> m.getTarget().hasTag(TargetTag.GLUON));
+        if (returnNativeModuleOnly)
+            executableModules = executableModules.filter(m -> m.getTarget().hasTag(TargetTag.NATIVE));
         if (executableModules.count() > 1)
             throw new CliException("Ambiguous executable modules. Please add one of the following options:\n" + executableModules.map(m -> "-M " + m.getName()).collect(Collectors.joining("\n")));
         return executableModules.findFirst().orElse(null);
@@ -111,16 +105,14 @@ final class BuildRunCommon {
 
     ReusableStream<DevProjectModule> findExecutableModules(DevProjectModule startingModule) {
         boolean openJfx = fatjar || openJfxDesktop;
-        boolean gluon = gluonDesktop || android || ios;
         return startingModule
                 .getThisAndChildrenModulesInDepth()
                 .filter(ProjectModule::isExecutable)
                 .filter(m ->
-                        m.isExecutable(Platform.GWT) ? gwt :
                         m.isExecutable(Platform.J2CL) ? j2cl :
                         m.isExecutable(Platform.TEAVM) ? teavm && m instanceof DevProjectModule dpm && (dpm.isWasmModule() ? wasm : javascript) :
                         m.getTarget().hasTag(TargetTag.OPENJFX) ? openJfx :
-                        m.getTarget().hasTag(TargetTag.GLUON) && gluon)
+                        m.getTarget().hasTag(TargetTag.NATIVE) && nativeDesktop)
                 .map(DevProjectModule.class::cast)
                 ;
     }
@@ -129,10 +121,7 @@ final class BuildRunCommon {
         List<Path> executablePaths = new ArrayList<>();
 
         Path targetPath = module.getHomeDirectory().resolve("target");
-        if (module.isExecutable(Platform.GWT)) {
-            if (gwt)
-                executablePaths.add(module.getGwtExecutableFilePath());
-        } else if (module.isExecutable(Platform.TEAVM)) {
+        if (module.isExecutable(Platform.TEAVM)) {
             if (teavm && (module.isWasmModule() ? wasm : javascript))
                 executablePaths.add(module.getTeaVMExecutableFilePath());
         } else if (module.isExecutable(Platform.JRE)) {
@@ -152,25 +141,10 @@ final class BuildRunCommon {
                             executablePaths.add(targetPath.resolve("javapackager/" + applicationName + "_" + module.getVersion() + ".rpm"));
                     }
                 }
-            } else if (module.getTarget().hasTag(TargetTag.GLUON)) {
-                switch (OperatingSystem.getOsFamily()) {
-                    case LINUX:
-                        if (gluonDesktop)
-                            executablePaths.add(targetPath.resolve("gluonfx/x86_64-linux/" + applicationName));
-                        if (android)
-                            executablePaths.add(targetPath.resolve("gluonfx/aarch64-android/gvm/" + applicationName + ".apk"));
-                        break;
-                    case MAC_OS:
-                        if (gluonDesktop)
-                            executablePaths.add(targetPath.resolve("gluonfx/x86_64-darwin/" + applicationName));
-                        if (ios)
-                            executablePaths.add(targetPath.resolve("gluonfx/arm64-ios/" + applicationName + ".ipa"));
-                        break;
-                    case WINDOWS:
-                        if (gluonDesktop)
-                            executablePaths.add(targetPath.resolve("gluonfx/x86_64-windows/" + applicationName + ".exe"));
-                        break;
-                }
+            } else if (module.getTarget().hasTag(TargetTag.NATIVE)) {
+                // Image built by the native-maven-plugin (see pom_native_executable.xml)
+                if (nativeDesktop)
+                    executablePaths.add(targetPath.resolve(applicationName + (OperatingSystem.isWindows() ? ".exe" : "")));
             }
         }
 

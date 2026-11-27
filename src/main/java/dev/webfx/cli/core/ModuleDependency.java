@@ -95,14 +95,12 @@ public final class ModuleDependency implements Comparable<ModuleDependency> {
             // We don't include the JavaFX emulation modules (as they may just be finally mapped to simple JavaFX modules)
             String destinationModuleName = destinationModule.getName();
             if (SpecificModules.isJavafxEmulModule(destinationModuleName)
-                // Except for GWT executables (which use only WebFX modules and need them all)
-                && !targetModule.isExecutable(Platform.GWT)
-                // Same with TeaVM executables (which compile the WebFX emulation instead of OpenJFX, so they need the
+                // Except for TeaVM executables (which compile the WebFX emulation instead of OpenJFX, so they need the
                 // transitive dependencies such as the controls registry => controls peers, perfect scrollbar, etc...)
                 && !targetModule.isExecutable(Platform.TEAVM)
                 // Same with J2CL (except for fat modules
                 && !(targetModule.isExecutable(Platform.J2CL) && !SpecificModules.isModulePartOfWebfxKitJavaFxGraphicsFatJ2cl(destinationModuleName) /*&& !SpecificModules.isModulePartOfWebfxExtrasVisualGridFatJ2cl(destinationModuleName)*/)
-                // Also except for Gluon modules using media => they need webfx-kit-javafxmedia-gluon + transitive dependencies such as webfx-platform-audio-gluon, Gluon Attach audio, etc...
+                // Also except for native modules using media => they need webfx-kit-javafxmedia-gluon + transitive dependencies such as webfx-platform-audio-gluon, Gluon Attach audio, etc...
                 && !destinationModuleName.equals(SpecificModules.WEBFX_KIT_JAVAFXMEDIA_GLUON))
                 return;
             ProjectModule pm = destinationModule instanceof ProjectModule ? (ProjectModule) destinationModule : null;

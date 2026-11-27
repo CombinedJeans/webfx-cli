@@ -40,7 +40,7 @@ public final class JavaSourceRootAnalyzer {
         ReusableStream.create(() -> // Using deferred creation because we can't call these methods before the constructor is executed
                 getJavaSourceRootPath() != null ? SplitFiles.uncheckedWalk(getJavaSourceRootPath()) : Spliterators.emptySpliterator())
             .filter(JAVA_FILE_MATCHER::matches)
-            // Ignoring Gwt super sources (required for m2 sources artifacts only)
+            // Ignoring GWT super sources (present in the sources artifacts of some WebFX libraries)
             .filter(path -> !path.startsWith("/super/"))
             // Ignoring module-info.java and package-info.java files
             .filter(path -> !path.getFileName().toString().endsWith("-info.java"))
@@ -506,7 +506,7 @@ public final class JavaSourceRootAnalyzer {
     }
 
     private boolean usesJavaNio() {
-        return Arrays.stream(SpecificPackages.GWT_NIO_EMULATED_PACKAGES).anyMatch(this::usesJavaPackage);
+        return Arrays.stream(SpecificPackages.JAVA_NIO_EMULATED_PACKAGES).anyMatch(this::usesJavaPackage);
     }
 
     public boolean isThisOrTransitiveDependenciesUsingJavaNio() {
@@ -796,24 +796,10 @@ public final class JavaSourceRootAnalyzer {
                 isUsingJavaNio ? rootModule.searchRegisteredModule(SpecificModules.JAVA_NIO_EMUL) : null
             ).filter(Objects::nonNull);
         }
-        if (projectModule.isExecutable(Platform.GWT)) {
-            boolean isUsingJavaTime = isThisOrTransitiveDependenciesUsingJavaTime();
-            boolean isUsingJavaNio = isThisOrTransitiveDependenciesUsingJavaNio();
-            boolean requiresTimezoneData =
-                ProjectModule.filterDestinationProjectModules(transitiveDependenciesWithoutEmulationAndImplicitProvidersCache)
-                    .anyMatch(ProjectModule::requiresTimeZoneData);
-            return ReusableStream.of(
-                rootModule.searchRegisteredModule(SpecificModules.WEBFX_KIT_JAVAFXGRAPHICS_ELEMENTAL2),
-                rootModule.searchRegisteredModule(SpecificModules.WEBFX_PLATFORM_JAVABASE_EMUL_GWT),
-                isUsingJavaTime ? rootModule.searchRegisteredModule(SpecificModules.GWT_TIME) : null,
-                !requiresTimezoneData ? null : rootModule.searchRegisteredModule(SpecificModules.ORG_JRESEARCH_GWT_TIME_TZDB),
-                isUsingJavaNio ? rootModule.searchRegisteredModule(SpecificModules.JAVA_NIO_EMUL) : null
-            ).filter(Objects::nonNull);
-        }
         if (projectModule.isExecutable(Platform.JRE)) {
             boolean isForOpenJFX = projectModule.getTarget().hasTag(TargetTag.OPENJFX);
-            boolean isForGluon = projectModule.getTarget().hasTag(TargetTag.GLUON);
-            if (!isForOpenJFX && !isForGluon)
+            boolean isForNative = projectModule.getTarget().hasTag(TargetTag.NATIVE);
+            if (!isForOpenJFX && !isForNative)
                 return mapDestinationModules(transitiveDependenciesWithoutEmulationAndImplicitProvidersCache)
                     .filter(m -> SpecificModules.isJavafxEmulModule(m.getName()));
             boolean usesMedia = mapDestinationModules(transitiveDependenciesWithoutEmulationAndImplicitProvidersCache).anyMatch(m -> SpecificModules.isJavaFxMediaModule(m.getName()));
@@ -822,7 +808,7 @@ public final class JavaSourceRootAnalyzer {
             return ReusableStream.of(
                 rootModule.searchRegisteredModule(SpecificModules.WEBFX_PLATFORM_BOOT_JAVA),
                 rootModule.searchRegisteredModule(SpecificModules.WEBFX_KIT_JAVAFXGRAPHICS_OPENJFX),
-                !usesMedia ? null : rootModule.searchRegisteredModule(isForGluon ? SpecificModules.WEBFX_KIT_JAVAFXMEDIA_GLUON : SpecificModules.WEBFX_KIT_JAVAFXMEDIA_EMUL),
+                !usesMedia ? null : rootModule.searchRegisteredModule(isForNative ? SpecificModules.WEBFX_KIT_JAVAFXMEDIA_GLUON : SpecificModules.WEBFX_KIT_JAVAFXMEDIA_EMUL),
                 !usesWeb ? null : rootModule.searchRegisteredModule(SpecificModules.WEBFX_KIT_JAVAFXWEB_EMUL),
                 !usesFxml ? null : rootModule.searchRegisteredModule(SpecificModules.WEBFX_KIT_JAVAFXFXML_EMUL)
             ).filter(Objects::nonNull);

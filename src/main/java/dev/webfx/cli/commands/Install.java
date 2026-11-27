@@ -17,6 +17,7 @@ import java.io.*;
 import java.net.URL;
 import java.nio.file.FileSystem;
 import java.nio.file.*;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -29,6 +30,7 @@ import java.util.zip.GZIPInputStream;
 @Command(name = "install", description = "Install or upgrade a third-party software.",
         subcommands = {
                 Install.GraalVm.class,
+                Install.GraalVmLatest.class,
                 Install.Wix.class,
                 Install.Inno.class,
                 Install.VsTools.class,
@@ -37,94 +39,157 @@ import java.util.zip.GZIPInputStream;
         })
 public final class Install extends CommonSubcommand {
 
-    @Command(name = "graalvm", description = "Install or upgrade GraalVM.")
+    @Command(name = "graalvm", description = "Install or upgrade GraalVM Community Edition, latest LTS release (without JavaFX).")
     static class GraalVm extends CommonSubcommand implements Runnable {
-
-        private static final boolean LATEST_VERSION = false; // Can't make the latest version work at the moment
-
-        // To see all releases: https://api.github.com/repos/gluonhq/graal/releases
-
-        private final static String GITHUB_GRAAL_RELEASE_PAGE_URL = LATEST_VERSION ?
-            "https://api.github.com/repos/gluonhq/graal/releases/latest" :
-            "https://api.github.com/repos/gluonhq/graal/releases/68947997"; // This is gluon-22.1.0.1-Final
 
         @Override
         public void run() {
-            String osToken = null;
-            switch (OperatingSystem.getOsFamily()) {
-                case WINDOWS: osToken = "windows"; break;
-                case MAC_OS: osToken = "darwin"; break;
-                case LINUX: osToken = "linux"; break;
+            installGraalVm(false);
+        }
+    }
+
+    @Command(name = "graalvm-latest", description = "Install or upgrade GraalVM Community Edition, latest non-LTS release (ex: 25.6, without JavaFX)."
+        + " It replaces the GraalVM installed by 'webfx install graalvm' (and vice versa).")
+    static class GraalVmLatest extends CommonSubcommand implements Runnable {
+
+        @Override
+        public void run() {
+            installGraalVm(true);
+        }
+    }
+
+    // GraalVM Community Edition, releases of github.com/graalvm/graalvm-ce-builds. It has no JavaFX in its JDK (unlike
+    // Liberica NIK Full, which conflicts with the OpenJFX jars that the native-desktop profile puts on the classpath:
+    // the executable then crashes at startup, see dev.webfx.cli.core.GraalVm).
+    // API documentation: https://docs.github.com/en/rest/releases/releases#list-releases
+    private final static String GRAALVM_CE_RELEASES_API_URL = "https://api.github.com/repos/graalvm/graalvm-ce-builds/releases?per_page=100";
+
+    /**
+     * Installs the latest LTS or non-LTS release of GraalVM Community Edition in the WebFX hidden folder (used by native
+     * builds when GRAALVM_HOME is not set, see dev.webfx.cli.core.GraalVm). Both share that folder, so installing one
+     * replaces the other.
+     */
+    private static void installGraalVm(boolean latestNonLts) {
+        String osToken = null, packageType = null;
+        switch (OperatingSystem.getOsFamily()) {
+            case WINDOWS: osToken = "windows"; packageType = "zip"; break;
+            case MAC_OS: osToken = "macos"; packageType = "tar.gz"; break;
+            case LINUX: osToken = "linux"; packageType = "tar.gz"; break;
+        }
+        String osArch = System.getProperty("os.arch");
+        String archToken = "aarch64".equalsIgnoreCase(osArch) || "arm64".equalsIgnoreCase(osArch) ? "aarch64" : "x64";
+        Logger.log("Checking for update on " + GRAALVM_CE_RELEASES_API_URL + " (latest " + (latestNonLts ? "non-LTS" : "LTS") + " release)");
+        String vmUrl = findGraalVmDownloadUrl(downloadPage(GRAALVM_CE_RELEASES_API_URL), latestNonLts, osToken, archToken, packageType);
+        if (vmUrl == null) {
+            Logger.log("No GraalVM found for your system!");
+            return;
+        }
+        installGraalVmArchive(vmUrl);
+        Path graalVmHome = WebFXHiddenFolder.getGraalVmHome();
+        Logger.log("GraalVM home: " + graalVmHome);
+        String graalVmHomeEnv = System.getenv("GRAALVM_HOME");
+        if (graalVmHomeEnv != null && !graalVmHomeEnv.isBlank() && graalVmHome != null && !Path.of(graalVmHomeEnv.trim()).equals(graalVmHome))
+            Logger.log("Note: native builds use GRAALVM_HOME first (" + graalVmHomeEnv.trim() + "). To build with this GraalVM, set GRAALVM_HOME to the path above or remove it.");
+    }
+
+    /**
+     * Selects the archive of the latest LTS or non-LTS release in the release list of graalvm-ce-builds. Each asset URL
+     * contains the release tag and the file name, ex:
+     * <ul>
+     *     <li>.../download/jdk-25.0.2/graalvm-community-jdk-25.0.2_windows-x64_bin.zip: GraalVM for JDK 25, LTS like JDK 25</li>
+     *     <li>.../download/graal-25.6.5.1/graalvm-community-jdk-25i6-25.0.5.1_windows-x64_bin.zip: innovation release 25.6 (non-LTS)</li>
+     *     <li>.../download/jdk-24.0.2/graalvm-community-jdk-24.0.2_windows-x64_bin.zip: GraalVM for JDK 24 (non-LTS like JDK 24)</li>
+     * </ul>
+     * The release with the highest version (from its tag) wins. The .sha256 and .sig files are excluded by requiring the
+     * archive extension at the end.
+     *
+     * @return the download URL, or null if no release matches
+     */
+    static String findGraalVmDownloadUrl(String releasesJson, boolean latestNonLts, String osToken, String archToken, String packageType) {
+        Pattern assetPattern = Pattern.compile("\"browser_download_url\"\\s*:\\s*\"([^\"]*/download/([^\"/]+)/(graalvm-community-jdk-[^\"/]*_"
+            + Pattern.quote(osToken + "-" + archToken) + "_bin\\." + Pattern.quote(packageType) + "))\"");
+        Pattern innovationPattern = Pattern.compile("graalvm-community-jdk-\\d+i\\d+-.*"); // ex: jdk-25i6-
+        Pattern jdkMajorPattern = Pattern.compile("graalvm-community-jdk-(\\d+)");
+        Pattern versionPattern = Pattern.compile("\\d+(\\.\\d+)*");
+        String bestUrl = null;
+        int[] bestVersion = null;
+        Matcher matcher = assetPattern.matcher(releasesJson);
+        while (matcher.find()) {
+            String url = matcher.group(1), tag = matcher.group(2), fileName = matcher.group(3);
+            Matcher jdkMajorMatcher = jdkMajorPattern.matcher(fileName);
+            Matcher versionMatcher = versionPattern.matcher(tag);
+            if (!jdkMajorMatcher.lookingAt() || !versionMatcher.find())
+                continue;
+            boolean lts = !innovationPattern.matcher(fileName).matches() && isLtsJdkVersion(Integer.parseInt(jdkMajorMatcher.group(1)));
+            if (lts == latestNonLts)
+                continue;
+            int[] version = Stream.of(versionMatcher.group().split("\\.")).mapToInt(Integer::parseInt).toArray();
+            if (bestVersion == null || Arrays.compare(version, bestVersion) > 0) {
+                bestUrl = url;
+                bestVersion = version;
             }
-            String archToken = "aarch64".equalsIgnoreCase(System.getProperty("os.arch")) ? "aarch64" : "amd64";
-            Logger.log("Checking for update on " + GITHUB_GRAAL_RELEASE_PAGE_URL);
-            String pageContent = downloadPage(GITHUB_GRAAL_RELEASE_PAGE_URL);
-            Pattern pattern = Pattern.compile(
-                LATEST_VERSION ?
-                    "\"browser_download_url\":\"([^\"]*/gluonhq/graal/releases/download/[^\"]*-java[^\"]*-" + osToken + "-" + archToken + "[^\"]*)\"" :
-                    "\"browser_download_url\":\"([^\"]*/gluonhq/graal/releases/download/[^\"]*-java17[^\"]*-" + osToken + "[^\"]*)\""
-                , 1);
-            Matcher matcher = pattern.matcher(pageContent);
-            if (!matcher.find()) {
-                Logger.log("No GraalVM found for your system!");
-                return;
-            }
+        }
+        return bestUrl;
+    }
 
-            String vmUrl = matcher.group(1);
-            if (vmUrl.startsWith("/"))
-                vmUrl = "https://github.com" + vmUrl;
+    /**
+     * JDK LTS versions: 8, 11, 17, and since then every two years (every fourth release): 21, 25, 29...
+     */
+    private static boolean isLtsJdkVersion(int major) {
+        return major == 8 || major == 11 || major == 17 || major >= 21 && (major - 21) % 4 == 0;
+    }
 
-            Path hiddenVmFolder = WebFXHiddenFolder.getCliSubFolder("graalvm");
-            String vmDownloadFileName = vmUrl.substring(vmUrl.lastIndexOf('/') + 1);
-            Path vmDownloadFilePath = hiddenVmFolder.resolve(vmDownloadFileName);
-            boolean isZip = vmDownloadFileName.endsWith(".zip");
-            boolean isTarGz = vmDownloadFileName.endsWith(".tar.gz");
-            String vmName = vmDownloadFileName.substring(0, vmDownloadFileName.lastIndexOf('.')); // removing .zip or .gz extension
-            if (isTarGz)
-                vmName = vmName.substring(0, vmName.lastIndexOf('.')); // removing .tar extension
-            Path vmTagFilePath = hiddenVmFolder.resolve(vmName + ".tag");
+    private static void installGraalVmArchive(String vmUrl) {
+        Path hiddenVmFolder = WebFXHiddenFolder.getCliSubFolder("graalvm");
+        String vmDownloadFileName = vmUrl.substring(vmUrl.lastIndexOf('/') + 1);
+        Path vmDownloadFilePath = hiddenVmFolder.resolve(vmDownloadFileName);
+        boolean isZip = vmDownloadFileName.endsWith(".zip");
+        boolean isTarGz = vmDownloadFileName.endsWith(".tar.gz");
+        String vmName = vmDownloadFileName.substring(0, vmDownloadFileName.lastIndexOf('.')); // removing .zip or .gz extension
+        if (isTarGz)
+            vmName = vmName.substring(0, vmName.lastIndexOf('.')); // removing .tar extension
+        Path vmTagFilePath = hiddenVmFolder.resolve(vmName + ".tag");
 
-            // Downloading the archive file
-            if (Files.exists(vmTagFilePath)) {
-                Logger.log("Already up-to-date (" + vmName + ")");
-                return;
-            }
+        // Downloading the archive file
+        if (Files.exists(vmTagFilePath)) {
+            Logger.log("Already up-to-date (" + vmName + ")");
+            return;
+        }
 
-            // Deleting all files to clear up space
-            if (Files.exists(hiddenVmFolder)) {
-                Logger.log("New version available!: " + vmName);
-                ReusableStream.create(() -> SplitFiles.uncheckedWalk(hiddenVmFolder))
-                        .sorted(Comparator.reverseOrder())
-                        .map(Path::toFile)
-                        .forEach(File::delete);
-            } else
-                Logger.log("Latest version: " + vmName);
+        // Deleting all files to clear up space (also another GraalVM installed there before)
+        if (Files.exists(hiddenVmFolder)) {
+            Logger.log("New version available!: " + vmName);
+            ReusableStream.create(() -> SplitFiles.uncheckedWalk(hiddenVmFolder))
+                    .sorted(Comparator.reverseOrder())
+                    .map(Path::toFile)
+                    .forEach(File::delete);
+        } else
+            Logger.log("Latest version: " + vmName);
 
-            // Downloading the GraalVM file
-            Logger.log("Downloading " + vmUrl);
-            downloadFile(vmUrl, vmDownloadFilePath);
+        // Downloading the GraalVM file
+        Logger.log("Downloading " + vmUrl);
+        downloadFile(vmUrl, vmDownloadFilePath);
 
-            // Uncompressing the zip archive
-            if (!isZip && !isTarGz)
-                Logger.log("Unknown compression format. Please manually uncompress " + vmDownloadFilePath);
-            else {
-                Logger.log("Uncompressing " + vmDownloadFilePath.getFileName());
+        // Uncompressing the zip archive
+        if (!isZip && !isTarGz)
+            Logger.log("Unknown compression format. Please manually uncompress " + vmDownloadFilePath);
+        else {
+            Logger.log("Uncompressing " + vmDownloadFilePath.getFileName());
 
-                if (isZip)
-                    unzip(vmDownloadFilePath, hiddenVmFolder);
-                else
-                    uncompressTarGz(vmDownloadFilePath, hiddenVmFolder);
+            if (isZip)
+                unzip(vmDownloadFilePath, hiddenVmFolder);
+            else
+                uncompressTarGz(vmDownloadFilePath, hiddenVmFolder);
 
-                // Deleting the archive files to free space
-                vmDownloadFilePath.toFile().delete();
-            }
+            // Deleting the archive files to free space
+            vmDownloadFilePath.toFile().delete();
+        }
 
-            // Recreating the tag file (used to know which graalvm version is installed)
-            try {
-                vmTagFilePath.toFile().createNewFile();
-            } catch (IOException e) {
-                throw new RuntimeException(e);
-            }
+        // Recreating the tag file (used to know which graalvm version is installed)
+        try {
+            vmTagFilePath.toFile().createNewFile();
+        } catch (IOException e) {
+            throw new RuntimeException(e);
         }
     }
 
@@ -263,18 +328,15 @@ public final class Install extends CommonSubcommand {
                     .setWorkingDirectory(hiddenVsFolder)
                     .setCommandTokens(vsDownloadFileName
                             , "--passive" // Display the installer user interface to show progress bars but in automatic mode (doesn't interact with the user)
-                            , "--addProductLang",  "En-us" // Mentioned in Gluon doc
-                            , "--add", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64" // Not mentioned in Gluon doc => install cl.exe (called by Gluon toolchain)
-                            , "--add",  "Microsoft.VisualStudio.Component.Windows10SDK.19041" // Mentioned in Gluon doc => if not installed, the Gluon toolchain raises this error: launcher.c(28): fatal error C1083: Cannot open include file: 'stdio.h': No such file or directory
-                            // , "--add", "Microsoft.VisualStudio.Component.VC.CLI.Support" // Mentioned in Gluon doc (but not sure what it is for)
-                            // , "--add", "Microsoft.VisualStudio.ComponentGroup.VC.Tools.142.x86.x64" // Mentioned in Gluon doc (but not sure what it is for)
-                            // , "--add", "Microsoft.Component.VC.Runtime.UCRTSDK" // Mentioned in Gluon doc (but not sure what it is for)
+                            , "--addProductLang",  "En-us"
+                            , "--add", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64" // => installs cl.exe (called by native-image)
+                            , "--add",  "Microsoft.VisualStudio.Component.Windows10SDK.19041" // => if not installed, native-image raises this error: launcher.c(28): fatal error C1083: Cannot open include file: 'stdio.h': No such file or directory
                     )
                     .executeAndWait();
         }
     }
 
-    @Command(name = "ubuntu-tools", description = "Install or upgrade the dev tools required by Gluon (Ubuntu).")
+    @Command(name = "ubuntu-tools", description = "Install or upgrade the dev tools required by GraalVM native-image for JavaFX (Ubuntu).")
     static class UbuntuTools extends CommonSubcommand implements Runnable {
 
         @Override
@@ -282,7 +344,7 @@ public final class Install extends CommonSubcommand {
             if (OperatingSystem.getOsFamily() != OsFamily.LINUX)
                 throw new CliException("This command is to be executed on Ubuntu machines only.");
 
-            ProcessCall.executeBashCommand("sudo apt install g++ libasound2-dev libavcodec-dev libavformat-dev libavutil-dev libgl-dev libgtk-3-dev libpango1.0-dev libxtst-dev");
+            ProcessCall.executeBashCommand("sudo apt install build-essential zlib1g-dev g++ libasound2-dev libavcodec-dev libavformat-dev libavutil-dev libgl-dev libgtk-3-dev libpango1.0-dev libxtst-dev");
         }
     }
 
@@ -294,14 +356,13 @@ public final class Install extends CommonSubcommand {
             if (OperatingSystem.getOsFamily() != OsFamily.MAC_OS)
                 throw new CliException("This command is to be executed on Macs only.");
 
-            //ProcessCall.executeCommandTokens("xcode-select", "--install"); // Installs the command line tools (not enough for Gluon)
-
-            checkOrFixXcodePathForGluon(true);
+            
+            checkOrFixXcodePath(true);
         }
     }
 
-    static boolean checkOrFixXcodePathForGluon(boolean install) {
-        // Fixing wrong Xcode path on macOS causing build failure (see issue https://github.com/gluonhq/substrate/issues/978)
+    static boolean checkOrFixXcodePath(boolean install) {
+        // Checking the Xcode path on macOS (a wrong path can cause native build failures)
         String xcodePath = new ProcessCall("xcode-select", "-p")
                 .setLogsCalling(install)
                 .setLogsCallDuration(false)
